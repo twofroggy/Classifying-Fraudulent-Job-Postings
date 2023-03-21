@@ -1,0 +1,165 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+Imports
+```{r}
+library("dplyr")
+library("DataExplorer")
+library("caret")
+library("randomForest")
+library("Hmisc")
+library("car")
+library("glmnet")
+library("pROC")
+library("gbm")
+```
+
+Setting Up
+```{r}
+df_train <- read.csv("joint_numeric.csv", header = TRUE , na.strings = c("na", "NA"),
+                     stringsAsFactors = FALSE, sep = ",")
+
+df_test <- read.csv("joint_test_numeric.csv", header = TRUE , na.strings = c("na", "NA"),
+                     stringsAsFactors = FALSE, sep = ",")
+```
+
+```{r}
+
+df_test[is.na(df_test)] = 0
+
+df_train$X<-NULL
+df_test$X<-NULL
+df_train$fraudulent<-as.factor(df_train$fraudulent)
+df_test$fraudulent<-as.factor(df_test$fraudulent)
+df_train$department_n_first_personp<-NULL
+#colnames(df_train)[colSums(is.na(df_train)) > 0]
+#colnames(df_test)[colSums(is.na(df_test)) > 0]
+
+```
+
+```{r}
+df_train = subset(df_train, select = c('has_company_logo', 'has_questions', 'fraudulent', 'has_department', 'has_salary_range', 'has_company_profile', 'has_requirements', 'has_benefits', 'has_employment_type', 'has_required_experience', 'has_industry', 'has_fn', 'department_n_chars', 'department_n_uq_words', 'department_n_caps', 'department_n_charsperword', 'department_sent_vader', 'department_n_second_personp', 'company_profile_n_hashtags', 'company_profile_n_chars', 'company_profile_n_exclaims', 'company_profile_n_words', 'company_profile_n_uq_words', 'company_profile_sent_afinn', 'company_profile_sent_bing', 'company_profile_n_polite', 'company_profile_n_first_person', 'company_profile_n_third_person', 'company_profile_n_prepositions', 'description_n_chars', 'description_n_caps', 'description_n_nonasciis', 'description_sent_afinn', 'description_sent_vader', 'description_n_polite', 'description_n_first_person', 'description_n_first_personp', 'description_n_second_personp', 'requirements_n_hashtags', 'requirements_n_chars', 'requirements_n_uq_words', 'requirements_n_charsperword', 'requirements_sent_vader', 'requirements_n_first_personp', 'requirements_n_second_personp', 'benefits_n_hashtags', 'benefits_n_caps', 'benefits_n_charsperword', 'benefits_sent_afinn', 'benefits_sent_bing', 'benefits_sent_syuzhet', 'benefits_n_polite', 'benefits_n_second_person', 'benefits_n_prepositions', 'YNusa', 'region_cat_NE', 'region_cat_SW', 'dep_engineering', 'industry_top', 'industry_acc', 'industry_oilenergy', 'employment_type_Full.time', 'employment_type_Part.time', 'title_developer', 'title_engineer', 'title_sales', 'title_customer', 'title_teacher', 'title_assistant', 'title_intern', 'required_experience_Associate', 'required_experience_Entry.level', 'required_experience_Mid.Senior.level', 'fn_Administrative', 'fn_Business.Development', 'fn_Customer.Service', 'fn_Engineering', 'fn_Finance', 'fn_Production', 'required_education_Professional'))
+
+df_test = subset(df_test, select = c('has_company_logo', 'has_questions', 'fraudulent', 'has_department', 'has_salary_range', 'has_company_profile', 'has_requirements', 'has_benefits', 'has_employment_type', 'has_required_experience', 'has_industry', 'has_fn', 'department_n_chars', 'department_n_uq_words', 'department_n_caps', 'department_n_charsperword', 'department_sent_vader', 'department_n_second_personp', 'company_profile_n_hashtags', 'company_profile_n_chars', 'company_profile_n_exclaims', 'company_profile_n_words', 'company_profile_n_uq_words', 'company_profile_sent_afinn', 'company_profile_sent_bing', 'company_profile_n_polite', 'company_profile_n_first_person', 'company_profile_n_third_person', 'company_profile_n_prepositions', 'description_n_chars', 'description_n_caps', 'description_n_nonasciis', 'description_sent_afinn', 'description_sent_vader', 'description_n_polite', 'description_n_first_person', 'description_n_first_personp', 'description_n_second_personp', 'requirements_n_hashtags', 'requirements_n_chars', 'requirements_n_uq_words', 'requirements_n_charsperword', 'requirements_sent_vader', 'requirements_n_first_personp', 'requirements_n_second_personp', 'benefits_n_hashtags', 'benefits_n_caps', 'benefits_n_charsperword', 'benefits_sent_afinn', 'benefits_sent_bing', 'benefits_sent_syuzhet', 'benefits_n_polite', 'benefits_n_second_person', 'benefits_n_prepositions', 'YNusa', 'region_cat_NE', 'region_cat_SW', 'dep_engineering', 'industry_top', 'industry_acc', 'industry_oilenergy', 'employment_type_Full.time', 'employment_type_Part.time', 'title_developer', 'title_engineer', 'title_sales', 'title_customer', 'title_teacher', 'title_assistant', 'title_intern', 'required_experience_Associate', 'required_experience_Entry.level', 'required_experience_Mid.Senior.level', 'fn_Administrative', 'fn_Business.Development', 'fn_Customer.Service', 'fn_Engineering', 'fn_Finance', 'fn_Production', 'required_education_Professional'))
+
+##IMPORTANTTTT
+train_df <- df_train %>% select_if(function(col) length(unique(col))>1)
+test_df <- df_test %>% select_if(function(col) length(unique(col))>1)
+```
+
+
+Original Logistic Regression Model
+```{r}
+# Log reg with everything
+set.seed(123)
+fraud_glm0 <- glm(fraudulent~., family=binomial, data=df_train)
+#summary(fraud_glm0)
+
+#originally got this warning
+#Warning: glm.fit: algorithm did not converge
+#Warning: glm.fit: fitted probabilities numerically 0 or 1 occurred
+
+# I found out it was due to ... Singularity means that your predictor variables are linearly dependent, i.e. one of the variables can be expressed as linear combination of other variables. Seeing that your predictor variables are dummies, you probably encountered dummy variable trap problem.
+
+```
+
+Correlation Plots
+```{r}
+without_df = subset(train_df, select = -c(fraudulent))
+#sum(is.na(train_df))
+
+res2 <- rcorr(as.matrix(train_df))
+
+corrdisp <- cor(without_df, method="s") 
+
+# find indices of highly correlated attributes 
+highlycorrelated <- findCorrelation(corrdisp, cutoff= 0.98)
+#highlycorrelated
+
+#count(highlycorrelated) --> 69 (with 0.5)
+#without_df[highlycorrelated]
+
+edit2_df = subset(train_df, select = -c(highlycorrelated))
+edit3_df = subset(test_df, select= -c(highlycorrelated))
+```
+
+Revised Logistic
+```{r}
+# from the correlation plot I noticed the below columns has a perfect colinearity so I got rid of one of them
+set.seed(123)
+
+#This one surpasses all warnings after ridding of all perfect colinearity
+fraud_glm5 <- glm(fraudulent~., family=binomial, data=edit2_df)
+#summary(fraud_glm5)
+
+
+# Revising model before testing
+fraud_glm6 = glm(fraudulent~ 
+                   . - region_cat_SW - has_industry -department_sent_vader
+                - department_n_second_personp -company_profile_n_chars
+                - company_profile_n_hashtags -company_profile_n_uq_words
+                -company_profile_n_first_person -company_profile_n_prepositions
+                -department_n_charsperword -description_n_nonasciis -description_sent_afinn
+                -description_sent_vader -description_n_first_person -description_n_first_personp
+                -requirements_n_hashtags -requirements_sent_vader -requirements_n_second_personp
+                - benefits_sent_bing -benefits_sent_syuzhet -industry_top -employment_type_Full.time
+                -title_customer -title_teacher -title_assistant -required_experience_Entry.level
+                -required_experience_Mid.Senior.level -fn_Finance -fn_Production 
+                - required_education_Professional - has_department ,
+                 data = edit2_df, family = binomial)
+#summary(fraud_glm6)
+
+```
+
+Analysis of Model
+```{r}
+predictTrain = predict(fraud_glm6, type = "response")
+table(edit2_df$fraudulent, predictTrain >= 0.5)
+
+accuracy = (244 + 13518) / nrow(edit2_df)
+sensitivity = 244 / (244 + 476)
+specificity = 13518 / (13518 + 86)
+#sensitivity 
+#specificity
+
+cat("accuracy: ", accuracy)
+
+threshold=0.5
+predicted_values<-ifelse(predict(fraud_glm6,type="response")>threshold,1,0)
+actual_values<-fraud_glm6$y
+conf_matrix<-table(predicted_values,actual_values)
+#conf_matrix
+#sensitivity(conf_matrix)
+#specificity(conf_matrix)
+```
+
+Applying Test
+```{r}
+predictTest = predict(fraud_glm6, type = "response", newdata = edit3_df)
+
+# no preference over error t = 0.5
+edit3_df$fraudulent = as.numeric(predictTest >= 0.5)
+table(edit3_df$fraudulent)
+
+predicted_probabilities <- predict(fraud_glm5,              
+                           newdata=edit2_df,      
+                           type="response") 
+
+class_preds <- ifelse(predicted_probabilities >= 0.5, 1, 0)  
+
+# Make a table of predictions vs. actual
+result_table <- table(class_preds,             
+                      edit2_df$fraudulent)  
+
+#result_table
+
+confusionMatrix(data = factor(class_preds), 
+                reference = factor(edit2_df$fraudulent),
+                positive = "1") 
+```
+

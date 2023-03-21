@@ -1,0 +1,1938 @@
+---
+title: "Joint EDA and Feature Engineering"
+output:
+  word_document: default
+  html_notebook: default
+  pdf_document: default
+  html_document:
+    toc: true
+    theme: united
+    df_print: paged
+---
+
+Loading libraries
+```{r,message=FALSE, warning=FALSE}
+library(fastDummies)
+library(stringr) 
+library(tidytext) 
+library(dplyr) 
+library(corrplot)
+library(tm) 
+library(janitor)  
+library(vtree) 
+library(ggplot2)
+library(reshape2) 
+library(tidyverse)
+library(sns)
+library(data.table)
+library(caret)
+library(corpus)
+library(tm)
+library(stringi)
+library(lattice)
+library(wordcloud)
+library(gmodels)
+library(e1071)
+library(SnowballC)
+library(gridExtra)
+library(stringi)
+library(knitr)
+library(RWeka)
+library(textfeatures)
+require(downloader)
+library(sqldf)
+library(compare)
+library(plotrix)
+```
+
+```{r,include=FALSE}
+#read in the df
+df <- read.csv("/Users/alishakhan/Desktop/School/FALL22/CSP571/project/fake_job_postings.csv", header = TRUE , na.strings = "",
+                     stringsAsFactors = T, sep = ",")
+
+df<-df %>% rename(fn=function.)
+df$index <- 1:nrow(df)
+df$job_id<-NULL
+```
+A few rows of the data we were given without modifications
+```{r}
+head(df)
+```
+
+# Alisha's Feature Engineering Pt 1
+
+```{r,include=FALSE}
+#Test-train split
+#80% of the sample size
+set.seed(1)
+smp_size<-floor(0.8*nrow(df))
+
+train_ind<-sample(seq_len(nrow(df)),size=smp_size)
+
+df_train<-df[train_ind,]
+df_test<-df[-train_ind,]
+##head(df_test)
+##head(df_train)
+```
+
+Number of NA for each column in our train set
+```{r}
+na_count <-sapply(df_train, function(y) sum(length(which(is.na(y)))))
+(na_count<-data.frame(na_count))
+```
+
+## Creating Binary Columns if a feature exists or not
+
+For each factor column: 1,0 exists or not. And then see the percent of each that are fraudulent
+```{r}
+na_col<-function(df,vals,response){
+  for(x in vals){
+    new_col<-paste("has",x,sep="_")
+    df[[new_col]]<-ifelse(is.na(df[[substitute(x)]]), 0, 1)
+    
+    
+  }
+  return(df)
+}
+
+df_train<-na_col(df_train, list("location","department", "salary_range", "company_profile", "requirements", "benefits", "employment_type", "required_experience", "required_education", "industry", "fn" ), "fraudulent")
+
+df_test<-na_col(df_test,list("location","department", "salary_range", "company_profile", "requirements", "benefits", "employment_type", "required_experience", "required_education", "industry", "fn" ), "fraudulent")
+```
+
+```{r}
+#count number of unique
+apply(df_train, 2, function(x) length(unique(x)))
+```
+
+## Creating text features for each text column
+
+```{r}
+text_cols<-function(df,vals){
+  for (x in vals){
+    print(x)
+    #df[[substitute(x)]]<-as.character(df[[substitute(x)]])#
+    
+    features<-textfeatures(as.character(df[[substitute(x)]])%>%replace_na(''),normalize=FALSE)
+    print("done with 1")
+    colnames(features)<-paste(x,colnames(features),sep="_")
+    print("done with 2")
+    df<-cbind(df, features[c(1:34)])
+  }
+  return(df)
+}
+
+df_train<-text_cols(df_train, list("department", "company_profile", "description", "requirements", "benefits"))
+df_test<-text_cols(df_test, list("department", "company_profile", "description", "requirements", "benefits"))
+```
+
+```{r,include=FALSE}
+na_count <-sapply(df_train, function(y) sum(length(which(is.na(y)))))
+(na_count<-data.frame(na_count))
+write.csv(df_train, "/Users/alishakhan/Desktop/School/FALL22/CSP571/project/join1.csv")
+write.csv(df_test,"/Users/alishakhan/Desktop/School/FALL22/CSP571/project/join1_test.csv")
+```
+
+```{r,include=FALSE}
+df_train <- read.csv("/Users/alishakhan/Desktop/School/FALL22/CSP571/project/join1.csv", header = TRUE , na.strings = c("na", "NA"),
+                     stringsAsFactors = FALSE, sep = ",")
+
+df_test<- read.csv("/Users/alishakhan/Desktop/School/FALL22/CSP571/project/join1_test.csv", header = TRUE , na.strings = c("na", "NA"),
+                     stringsAsFactors = FALSE, sep = ",")
+```
+
+```{r,include=FALSE}
+na_count <-sapply(df_train, function(y) sum(length(which(is.na(y)))))
+(na_count<-data.frame(na_count))
+```
+
+# Anette's EDA and Feature Engineering
+
+```{r}
+anette_df <- df_train[c('location', 'company_profile', 'benefits', 'has_company_logo', 'required_education', 'fraudulent')]
+
+anette_test_df <- df_test[c('location', 'company_profile', 'benefits', 'has_company_logo', 'required_education', 'fraudulent')]
+```
+
+Mode function
+```{r}
+get_mode <- function(x) {                 
+  unique_x <- unique(x)
+  tabulate_x <- tabulate(match(x, unique_x))
+  unique_x[tabulate_x == max(tabulate_x)]
+}
+```
+
+## Location
+
+```{r}
+# splitting location
+anette_df[c('country', 'state', 'city')] <- str_split_fixed(anette_df$location, ',', 3)
+anette_df = subset(anette_df, select = -c(location))
+
+#originally just blanks filled with NA
+anette_df[anette_df == "" | anette_df == " "] <- NA  # Replace blank & space by NA
+
+# created a seperate location dataset to play with
+location <- anette_df[c('country', 'state', 'city', 'fraudulent')]
+usa <- anette_df[anette_df$country == "US", ]
+
+#take out white spaces out of state
+anette_df$state<- trimws(anette_df$state, which = c("left"))
+
+# splitting location
+anette_test_df[c('country', 'state', 'city')] <- str_split_fixed(anette_test_df$location, ',', 3)
+anette_test_df = subset(anette_test_df, select = -c(location))
+
+#originally just blanks filled with NA
+anette_test_df[anette_test_df == "" | anette_test_df == " "] <- NA  # Replace blank & space by NA
+
+# created a seperate location dataset to play with
+location <- anette_test_df[c('country', 'state', 'city', 'fraudulent')]
+usa <- anette_test_df[anette_test_df$country == "US", ]
+
+#take out white spaces out of state
+anette_test_df$state<- trimws(anette_test_df$state, which = c("left"))
+```
+
+EDA for Country
+```{r}
+anette_df$YNusa<- ifelse(anette_df$country %in% "US", 1, 0)
+anette_test_df$YNusa<- ifelse(anette_test_df$country %in% "US", 1, 0)
+
+# 
+#agg_country_total <- location%>% group_by(country) %>% 
+#  summarise(sum = sum(country),
+#            .groups = 'drop')
+
+#mode of country
+get_mode(anette_df$country)
+
+# Summary of which countries are correlated with fraud
+#doing this with mode
+agg_country_mode <- anette_df %>% group_by(country) %>% 
+  summarise(fraudulent= get_mode(fraudulent),
+            .groups = 'drop')
+
+##view this model (sorted)
+#view(agg_country_mode[order(agg_country_mode$fraudulent, decreasing = TRUE), ])
+
+
+#doing this with mean
+agg_country_mean<- anette_df %>% group_by(country) %>% 
+  summarise(fraudulent= mean(fraudulent),
+            .groups = 'drop')
+
+#view(agg_country_mean[order(agg_country_mean$fraudulent, decreasing = TRUE), ])
+
+
+#Grouping Countries by Fraud and notFraud
+# Sum for each country of notFraud
+agg_country_notfraud<-location%>% group_by(country) %>% 
+  summarise(sum_notfraud = sum(fraudulent == '0'),
+            .groups = 'drop')
+
+#view(agg_country_notfraud[order(agg_country_notfraud$sum_notfraud, decreasing = TRUE), ])
+
+
+# group by country and sum of fraud
+#sum of each country fraud
+agg_country_fraud<-location%>% group_by(country) %>% 
+  summarise(sum_fraud = sum(fraudulent == '1'),
+            .groups = 'drop')
+
+#view(agg_country_fraud[order(agg_country_fraud$sum_fraud, decreasing = TRUE), ])
+
+#plotting Country
+ggplot(anette_df, aes(x = country, fill =  !fraudulent))+
+  geom_bar(stat = "count")
+
+#plotting Country
+ggplot(data = location) +
+  geom_bar(mapping = aes(x = country))
+
+# creating a numeric set of countries in case we want it
+anette_df$country_num=anette_df$country
+anette_df$country_num<-factor(anette_df$country_num)
+anette_df$country_num<-unclass(anette_df$country_num)
+
+#################################################################################
+# if necessary able to convert to a dataframe for future analysis
+# Convert tibble to df
+dataframe_groupCountry_not_fraud<-agg_country_notfraud %>% as.data.frame()
+dataframe_groupCountry_not_fraud
+# Convert tibble to df
+dataframe_groupCountry_fraud<-agg_country_fraud %>% as.data.frame()
+dataframe_groupCountry_fraud
+```
+
+Dealing with NA's for country
+```{r}
+# replacing NA's with US (mode)
+data2 <- anette_df
+data2$country<-anette_df$country %>% replace_na('US')
+
+#same summaries above but replacing NA's with mode
+#data but grouping by mode
+agg_country_mode_replace_NAmode<-data2 %>% group_by(country) %>% 
+  summarise(fraudulent= get_mode(fraudulent),
+            .groups = 'drop')
+
+##viewing the model above, when NA's are replace by the mode of the original dataset. This is displayed by mode
+#view(agg_country_mode_replace_NAmode[order(agg_country_mode_replace_NAmode$fraudulent, decreasing = TRUE), ])
+
+
+#data but grouping by mean
+agg_country_mean_replace_NAmode<-data2 %>% group_by(country) %>% 
+  summarise(fraudulent= mean(fraudulent),
+            .groups = 'drop')
+
+##viewing the model above, when NA's are replace by the mode of the original dataset. This is displayed by mean
+#view(agg_country_mean_replace_NAmode[order(agg_country_mean_replace_NAmode$fraudulent, decreasing = TRUE), ])
+
+
+
+#replacing NA's with new category called NA (this is the same as original analysis)
+data3<-anette_df
+data3$country<-data3$country %>% replace_na('MIS')
+
+agg_country_mode_replace_NAmis<- data3%>% group_by(country) %>% 
+  summarise(fraudulent= get_mode(fraudulent),
+            .groups = 'drop')
+
+#doing this with mean
+agg_country_mean_replace_NAmis<-data3 %>% group_by(country) %>% 
+  summarise(fraudulent= mean(fraudulent),
+            .groups = 'drop')
+
+```
+
+EDA for State
+```{r}
+############################################################################ 
+#State
+###########################################################################
+#Noticed numbers in the assesments below
+anette_df[anette_df$state %in% c('16','14','41'),]
+
+#this first analysis is just from the main dataset
+#model for just state based off of mean
+agg_state_mean <- anette_df %>% group_by(state) %>% 
+  summarise(fraudulent= mean(fraudulent),
+            .groups = 'drop')
+
+#view(agg_state_mean[order(agg_state_mean$fraudulent, decreasing = TRUE), ])
+
+#model for just state based off of mode
+agg_state_mode <- anette_df %>% group_by(state) %>% 
+  summarise(fraudulent= get_mode(fraudulent),
+            .groups = 'drop')
+
+#view(agg_state_mode[order(agg_state_mode$fraudulent, decreasing = TRUE), ])
+
+
+#plotting state
+ggplot(anette_df, aes(x = state, fill =  !fraudulent))+
+  geom_bar(stat = "count")
+
+#this is from just the unites states dataset
+#model for just state based off of mean
+agg_state_mean_us <- usa %>% group_by(state) %>% 
+  summarise(fraudulent= mean(fraudulent),
+            .groups = 'drop')
+
+#view(agg_state_mean_us[order(agg_state_mean_us$fraudulent, decreasing = TRUE), ])
+
+#model for just state based off of mode
+agg_state_mode_us <- usa %>% group_by(state) %>% 
+  summarise(fraudulent= get_mode(fraudulent),
+            .groups = 'drop')
+
+#view(agg_state_mode_us[order(agg_state_mode_us$fraudulent, decreasing = TRUE), ])
+
+
+#Grouping states(from usa) by Fraud and notFraud
+# Sum for each state of notFraud
+agg_country_notfraud_usa <- usa %>% group_by(state) %>% 
+  summarise(sum_notfraud = sum(fraudulent == '0'),
+            .groups = 'drop')
+
+#view(agg_country_notfraud_usa[order(agg_country_notfraud_usa$sum_notfraud, decreasing = TRUE), ])
+
+
+# group by country and sum of fraud
+#sum of each state fraud
+agg_country_fraud_usa <- usa %>% group_by(state) %>% 
+  summarise(sum_fraud = sum(fraudulent == '1'),
+            .groups = 'drop')
+
+#view(agg_country_fraud_usa[order(agg_country_fraud_usa$sum_fraud, decreasing = TRUE), ])
+
+# I do not believe this is as useful at the region one since there are more states than regions 
+
+
+# I believe this model is very interesting
+agg_state_mode <- anette_df %>% group_by(state, country) %>% 
+  summarise(fraudulent= get_mode(fraudulent),
+            .groups = 'drop')
+
+#view(agg_state_mode[order(agg_state_mode$fraudulent, decreasing = TRUE), ])
+```
+Dealing with NA's for state? --> make them into MISS (missing) or UNSP (unspecified)
+
+Making a column named region based off of State
+```{r}
+#creating a new column called region which does regions based off of state (in the US)
+anette_df<-anette_df %>% mutate(region_cat = case_when(state == 'IL' ~ "MW", 
+                          state == 'IN' ~ "MW", state == 'WI' ~ "MW",
+                          state == 'MI' ~ "MW", state == 'OH' ~ "MW",
+                          state == 'MO' ~ "MW", state == 'KS' ~ "MW",
+                          state == 'NE' ~ "MW", state == 'SD' ~ "MW",
+                          state == 'ND' ~ "MW", state == 'MN' ~ "MW",
+                          state == 'IA' ~ "MW",
+                               
+                          state == 'ME' ~ "NE", state == 'VT' ~ "NE",
+                          state == 'MA' ~ "NE", state == 'RI' ~ "NE",
+                          state == 'CT' ~ "NE", state == 'NY' ~ "NE",
+                          state == 'NJ' ~ "NE", state == 'PA' ~ "NE",
+                          state == 'NH' ~ "NE",
+                               
+                          state == 'DE' ~ "SE", state == 'MD' ~ "SE",
+                          state == 'WV' ~ "SE", state == 'VA' ~ "SE",
+                          state == 'NC' ~ "SE", state == 'SC' ~ "SE",
+                          state == 'GA' ~ "SE", state == 'AL' ~ "SE",
+                          state == 'FL' ~ "SE", state == 'MS' ~ "SE",
+                          state == 'TN' ~ "SE", state == 'KY' ~ "SE",
+                          state == 'LA' ~ "SE", state == 'AR' ~ "SE",
+                               
+                          state == 'AZ' ~ "SW", state == 'NM' ~ "SW",
+                          state == 'OK' ~ "SW", state == 'TX' ~ "SW",
+                               
+                          state == 'WA' ~ "W", state == 'MT' ~ "W",
+                          state == 'OR' ~ "W", state == 'ID' ~ "W",
+                          state == 'WY' ~ "W", state == 'CA' ~ "W",
+                          state == 'NV' ~ "W", state == 'UT' ~ "W",
+                          state == 'CO' ~ "W", state == 'HI' ~ "W",
+                          state == 'AK' ~ "W"))
+
+# to deal with NA's I created a seperate variable called UNSP (unspecified)
+anette_df$region_cat<- anette_df$region_cat %>% replace_na('UNSP')
+
+
+
+
+
+anette_test_df<-anette_test_df %>% mutate(region_cat = case_when(state == 'IL' ~ "MW", 
+                          state == 'IN' ~ "MW", state == 'WI' ~ "MW",
+                          state == 'MI' ~ "MW", state == 'OH' ~ "MW",
+                          state == 'MO' ~ "MW", state == 'KS' ~ "MW",
+                          state == 'NE' ~ "MW", state == 'SD' ~ "MW",
+                          state == 'ND' ~ "MW", state == 'MN' ~ "MW",
+                          state == 'IA' ~ "MW",
+                               
+                          state == 'ME' ~ "NE", state == 'VT' ~ "NE",
+                          state == 'MA' ~ "NE", state == 'RI' ~ "NE",
+                          state == 'CT' ~ "NE", state == 'NY' ~ "NE",
+                          state == 'NJ' ~ "NE", state == 'PA' ~ "NE",
+                          state == 'NH' ~ "NE",
+                               
+                          state == 'DE' ~ "SE", state == 'MD' ~ "SE",
+                          state == 'WV' ~ "SE", state == 'VA' ~ "SE",
+                          state == 'NC' ~ "SE", state == 'SC' ~ "SE",
+                          state == 'GA' ~ "SE", state == 'AL' ~ "SE",
+                          state == 'FL' ~ "SE", state == 'MS' ~ "SE",
+                          state == 'TN' ~ "SE", state == 'KY' ~ "SE",
+                          state == 'LA' ~ "SE", state == 'AR' ~ "SE",
+                               
+                          state == 'AZ' ~ "SW", state == 'NM' ~ "SW",
+                          state == 'OK' ~ "SW", state == 'TX' ~ "SW",
+                               
+                          state == 'WA' ~ "W", state == 'MT' ~ "W",
+                          state == 'OR' ~ "W", state == 'ID' ~ "W",
+                          state == 'WY' ~ "W", state == 'CA' ~ "W",
+                          state == 'NV' ~ "W", state == 'UT' ~ "W",
+                          state == 'CO' ~ "W", state == 'HI' ~ "W",
+                          state == 'AK' ~ "W"))
+
+# to deal with NA's I created a seperate variable called UNSP (unspecified)
+anette_test_df$region_cat<- anette_test_df$region_cat %>% replace_na('UNSP')
+
+
+
+
+
+#Grouping states(from usa) by Fraud and notFraud
+# Sum for each state of notFraud
+agg_country_notfraud_region <- anette_df %>% group_by(region_cat) %>% 
+  summarise(sum_notfraud = sum(fraudulent == '0'),
+            .groups = 'drop')
+
+#view(agg_country_notfraud_region[order(agg_country_notfraud_region$sum_notfraud, decreasing = TRUE), ])
+
+# group by country and sum of fraud
+#sum of each state fraud
+agg_country_fraud_region<- anette_df %>% group_by(region_cat) %>% 
+  summarise(sum_fraud = sum(fraudulent == '1'),
+            .groups = 'drop')
+
+#view(agg_country_fraud_region[order(agg_country_fraud_region$sum_fraud, decreasing = TRUE), ])
+
+#plotting Region
+ggplot(anette_df, aes(x = region_cat, fill =  !fraudulent))+
+  geom_bar(stat = "count")
+
+
+
+#create another region column which is numeric
+anette_df$region_num= anette_df$region_cat
+anette_df$region_num<- factor(anette_df$region_num)
+anette_df$region_num<- unclass(anette_df$region_num)
+
+#doing the same thing for the numeric
+#Grouping states(from usa) by Fraud and notFraud
+# Sum for each state of notFraud
+agg_country_notfraud_region<- anette_df %>% group_by(region_num) %>% 
+  summarise(sum_notfraud = sum(fraudulent == '0'),
+            .groups = 'drop')
+
+#view(agg_country_notfraud_region[order(agg_country_notfraud_region$sum_notfraud, decreasing = TRUE), ])
+
+
+# group by country and sum of fraud
+#sum of each state fraud
+agg_country_fraud_region<-anette_df %>% group_by(region_num) %>% 
+  summarise(sum_fraud = sum(fraudulent == '1'),
+            .groups = 'drop')
+
+#view(agg_country_fraud_region[order(agg_country_fraud_region$sum_fraud, decreasing = TRUE), ])
+
+#another type of visual histogram of this
+histogram(~region_num | fraudulent, data = anette_df)
+```
+
+## has_company_logo
+
+```{r}
+# does not have any NA
+table(df_train['has_company_logo'])
+sum(is.na(anette_df$has_company_logo))
+
+#doing this with mode
+agg_hasLogo_mode<- anette_df %>% group_by(has_company_logo) %>% 
+  summarise(fraudulent = get_mode(fraudulent),
+            .groups = 'drop')
+
+#view(agg_hasLogo_mode[order(agg_hasLogo_mode$fraudulent, decreasing = TRUE), ])
+
+#doing this with mean
+agg_hasLogo_mean<- anette_df %>% group_by(has_company_logo) %>% 
+  summarise(fraudulent= mean(fraudulent),
+            .groups = 'drop')
+
+#view(agg_hasLogo_mean[order(agg_hasLogo_mean$fraudulent, decreasing = TRUE), ])
+
+
+# Has company logo and is fraudulent
+nrow(anette_df[anette_df$has_company_logo == '1' & anette_df$fraudulent == '1', ]) 
+# Has company logo and isn't fraudulent
+nrow(anette_df[anette_df$has_company_logo == '1' & anette_df$fraudulent == '0', ]) 
+# Doesn't have company logo and is fraudulent
+nrow(anette_df[anette_df$has_company_logo == '0' & anette_df$fraudulent == '1', ]) 
+# Doesn't have company logo and isn't fraudulent
+nrow(anette_df[anette_df$has_company_logo == '0' & anette_df$fraudulent == '0', ]) 
+
+#counts
+(typeCounts<- table(anette_df$has_company_logo))
+#percents
+prop.table(typeCounts)
+#display
+pie(typeCounts)
+
+ggplot(anette_df,aes(x=has_company_logo,fill=fraudulent))+geom_bar(position="fill")+labs(y="Proportion")
+
+#plotting Country
+ggplot(anette_df, aes(x = has_company_logo, fill =  !fraudulent))+
+  geom_bar(stat = "count")
+
+#plotting Country
+ggplot(data = location) +
+  geom_bar(mapping = aes(x = country))
+
+# creating a numeric set of countries in case we want it
+anette_df$country_num= anette_df$country
+anette_df$country_num<- factor(anette_df$country_num)
+anette_df$country_num<- unclass(anette_df$country_num)
+
+###########################################################################
+#
+# need to drop NA's before running the models
+##########################################################################
+data1 <- anette_df
+sample <- sample(c(TRUE, FALSE), nrow(data1), replace=TRUE, prob=c(0.8,0.2))
+train <- data1[sample, ]
+test <- data1[!sample, ]
+model <- glm(fraudulent~has_company_logo, family="binomial", data=train)
+#use model to predict probability of default
+predicted <- predict(model, test, type="response")
+```
+
+## Company profile
+
+```{r}
+#Analysis
+#head(anette_df$company_profile)
+text_count<- str_count(anette_df$company_profile)
+anette_df<- cbind(anette_df, text_count)
+myvars<- c("company_profile", "text_count", "fraudulent")
+copy<- anette_df[myvars]
+#copy%>% arrange(desc(text_count))
+#copy%>% arrange(text_count)
+
+sum(is.na(anette_df$company_profile))
+
+
+#anette_df %>% dplyr::mutate(company_profile = replace_na(company_profile, "NAVALUES"))
+
+anette_df$company_profile<-as.character(anette_df$company_profile)
+anette_df$company_profile<- anette_df$company_profile %>% replace_na("UNSP")
+sum(is.na(anette_df$company_profile))
+anette_df$company_profile<-as.factor(anette_df$company_profile)
+anette_df = subset(anette_df, select = -c(text_count))
+
+# a histogram of text length and visual comparison to fraud and not fraud
+#layered
+ggplot(anette_df, aes(text_count, fill = !fraudulent)) + geom_histogram(binwidth = 100)
+
+#unlayered
+ggplot(anette_df, aes(text_count, fill = !fraudulent)) + geom_histogram(binwidth = 100) + facet_wrap(~fraudulent)
+
+#another type of visual histogram of this
+histogram(~text_count | fraudulent, data = anette_df)
+
+sms_corpus<- VCorpus(VectorSource(anette_df$company_profile))
+#sms_corpus_clean <- tm_map(sms_corpus, tolower) #all letters to lowercase
+sms_corpus_clean<- tm_map(sms_corpus, content_transformer(tolower))
+sms_corpus_clean<- tm_map(sms_corpus_clean, removeNumbers) #removes numbers
+sms_corpus_clean<- tm_map(sms_corpus_clean, removePunctuation) #removes punctuation
+sms_corpus_clean<- tm_map(sms_corpus_clean, removeWords, stopwords())
+#sms_corpus_clean <- tm_map(sms_corpus_clean, removeWords, stopwords('â'))
+sms_corpus_clean<- tm_map(sms_corpus_clean, stripWhitespace)
+
+#look at the cleaned corpus
+#inspect(sms_corpus_clean[1:3])
+
+#document term matrix used for analyzing tokenization
+sms_dtm<- DocumentTermMatrix(sms_corpus_clean)
+
+# displaying frequent terms in a wordcloud
+wordcloud(sms_corpus_clean, min.freq = 1000, scale=c(4, .5), colors = brewer.pal(8,"Set2"), random.order = F)
+
+#frequent terms
+#findFreqTerms(sms_dtm, lowfreq =  100)
+#findFreqTerms(sms_dtm, lowfreq =  1000)
+
+#find associations
+findAssocs(sms_dtm, 'applications', .5)
+```
+
+## benefits
+
+```{r}
+# General data info
+copy4<- df_train
+
+# Analysis
+stricount_benef <- str_count(anette_df$benefits)
+copy4 <- cbind(anette_df, stricount_benef)
+
+myvars <- c("benefits", "stricount_benef", "fraudulent")
+copy4 <- copy4[myvars]
+
+#copy4 %>% arrange(desc(stricount_benef))
+#copy4 %>% arrange(stricount_benef)
+
+
+#Text count and Histograms
+text_count <- str_count(copy4$benefits)
+# a histogram of text length and visual comparison to fraud and not fraud
+#layered
+ggplot(copy4, aes(text_count, fill = !fraudulent)) + geom_histogram(binwidth = 100)
+
+#unlayered
+ggplot(copy4, aes(text_count, fill = !fraudulent)) + geom_histogram(binwidth = 100) + facet_wrap(~fraudulent)
+
+#another type of visual histogram of this
+histogram(~text_count | fraudulent, data = copy4)
+
+
+################################################################################
+sms_corpus <- VCorpus(VectorSource(copy4$benefits))
+#sms_corpus_clean <- tm_map(sms_corpus, tolower) #all letters to lowercase
+sms_corpus_clean <- tm_map(sms_corpus, content_transformer(tolower))
+sms_corpus_clean <- tm_map(sms_corpus_clean, removeNumbers) #removes numbers
+sms_corpus_clean <- tm_map(sms_corpus_clean, removePunctuation) #removes punctuation
+sms_corpus_clean <- tm_map(sms_corpus_clean, removeWords, stopwords())
+#sms_corpus_clean <- tm_map(sms_corpus_clean, removeWords, stopwords('â'))
+sms_corpus_clean <- tm_map(sms_corpus_clean, stripWhitespace)
+
+course_corpus5 <- tm_map(sms_corpus_clean, stemDocument)
+#analyze_corpus("Stemmed Corpus", course_corpus5)
+
+#look at the cleaned corpus
+#inspect(sms_corpus_clean[1:3])
+
+#document term matrix used for analyzing tokenization
+sms_dtm <- DocumentTermMatrix(sms_corpus_clean)
+
+# displaying frequent terms in a wordcloud
+wordcloud(sms_corpus_clean, min.freq = 1000, scale=c(4, .5), colors = brewer.pal(8,"Set2"), random.order = F)
+
+#frequent terms
+#findFreqTerms(sms_dtm, lowfreq =  100)
+#findFreqTerms(sms_dtm, lowfreq =  1000)
+
+#find associations
+findAssocs(sms_dtm, 'applications', .5)
+```
+
+
+## required_education
+
+```{r}
+# General set up 
+copy5 <- df_train # copy dataset
+copy5num <- copy5
+# gives us amount of categories
+categories <- unique(anette_df$required_education) 
+numberOfCategories <- length(categories)
+categories
+
+#the way i dealt with NA's is I grouped them under unspecified
+anette_df[anette_df=="Vocational - Degree"] <- "Vocational"
+anette_df[anette_df=="Vocational - HS Diploma"] <- "Vocational"
+anette_df$required_education <- anette_df$required_education %>% replace_na("Unspecified")
+unique(anette_df$required_education)
+anette_df <- droplevels(anette_df)
+
+#gives us the info above in a table
+anette_df %>% 
+  count(required_education)
+
+# Making required education numeric 
+anette_df$educ_num = anette_df$required_education
+anette_df$educ_num <- factor(anette_df$required_education)
+anette_df$educ_num <- unclass(anette_df$required_education)
+
+table1<- anette_df %>% 
+  count(educ_num)
+
+mean(anette_df$educ_num)
+mode(anette_df$educ_num)
+
+# Plotting
+ggplot(data = anette_df) +
+  geom_bar(mapping = aes(x = educ_num))
+
+#plotting state
+ggplot(anette_df, aes(x = educ_num, fill =  !fraudulent))+
+  geom_bar(stat = "count")
+
+# the most common one is NA which I do not want to replace it with. If I accumulate together NA and unspesified this also is the case where unspecified is the most common.I ended up handeling the NA's in this case by just making them unspecified.
+
+# Mode
+agg_tbl1 <- anette_df %>% group_by(required_education) %>% 
+  summarise(fraudulent= get_mode(fraudulent),
+            .groups = 'drop')
+
+# Mean
+agg_tbl2 <- anette_df %>% group_by(required_education) %>% 
+  summarise(fraudulent= mean(fraudulent),
+            .groups = 'drop')
+########################################################################################
+# This was the original way that I dealt with NA's and displayed them (ignore)
+########################################################################################
+# General Analysis
+
+# dealing with NA's
+# dropping NA
+noNAcopy5 <- anette_df[!is.na(anette_df$required_education),]
+
+ednoNAmode <- noNAcopy5 %>% group_by(required_education) %>% 
+  summarise(fraudulent= get_mode(fraudulent),
+            .groups = 'drop')
+
+# Mean
+ednoNAmean <- noNAcopy5 %>% group_by(required_education) %>% 
+  summarise(fraudulent= mean(fraudulent),
+            .groups = 'drop')
+
+# replacing with MIS
+copy5$required_education<-as.character(anette_df$required_education)
+anette_df$required_education<-as.character(anette_df$required_education)
+copy5$required_education<- anette_df$required_education %>% replace_na('MIS')
+
+agg_tbl1 <- anette_df %>% group_by(required_education) %>% 
+  summarise(fraudulent= get_mode(fraudulent),
+            .groups = 'drop')
+
+# Mean
+agg_tbl2 <- anette_df %>% group_by(required_education) %>% 
+  summarise(fraudulent= mean(fraudulent),
+            .groups = 'drop')
+```
+
+## Adding Anette's features to the dataframe
+
+Yes or no if country is USA, dummy variables for region and required_education
+```{r}
+df_train$YNusa<-anette_df$YNusa
+df_train$region_cat<-anette_df$region_cat
+
+df_test$YNusa<-anette_test_df$YNusa
+df_test$region_cat<-anette_test_df$region_cat
+```
+```{r}
+df_train<-dummy_cols(df_train, select_columns="region_cat")
+df_test<-dummy_cols(df_test,select_columns="region_cat")
+df_test<-dummy_cols(df_test,select_columns="required_education")
+```
+
+
+```{r}
+df_train<-dummy_cols(df_train,select_columns="required_education")
+```
+
+
+# Tiffany's EDA and Feature Engineering
+
+```{r}
+tiff_attrs <- c("index", "department", "description", "has_questions", "employment_type", "industry", "fraudulent") 
+tiff_df <- df_train[tiff_attrs] 
+
+# convert fraudulent as factor type 
+tiff_df$fraudulent <- as.factor(tiff_df$fraudulent)
+
+# clean department column 
+departments <- tiff_df$department 
+# set to lowercase 
+departments <- tolower(departments) 
+tiff_df$department <- departments 
+
+# clean industry column 
+industries <- tiff_df$industry 
+# set to lowercase 
+industries <- tolower(industries) 
+tiff_df$industry <- industries 
+
+#head(tiff_df)
+
+
+
+tiff_test_df <- df_test[tiff_attrs] 
+
+# convert fraudulent as factor type 
+tiff_test_df$fraudulent <- as.factor(tiff_test_df$fraudulent)
+
+# clean department column 
+departments <- tiff_test_df$department 
+# set to lowercase 
+departments <- tolower(departments) 
+tiff_test_df$department <- departments 
+
+# clean industry column 
+industries <- tiff_test_df$industry 
+# set to lowercase 
+industries <- tolower(industries) 
+tiff_test_df$industry <- industries 
+
+#head(tiff_test_df)
+```
+
+## create dataframe on column info 
+
+```{r} 
+# create a SEPARATE df for info abt my subset of variables 
+# look at num of missing values 
+info <- data.frame(sapply(tiff_df, function(x) sum(is.na(x)))) 
+names(info) <- c("missing values") 
+
+# ratio of missing values 
+info$missingratio <- info$"missing values"/nrow(tiff_df) 
+
+# look at unique values of each column 
+uniquevals <- c() 
+for (column in tiff_attrs) { 
+  uniquevals <- append(uniquevals, nrow(unique(tiff_df[column]))) 
+}
+info$unique <- uniquevals 
+
+# number of unique values of each attribute 
+nuniquevals <- c() 
+for (column in tiff_attrs) {
+  nuniquevals <- append(nuniquevals, n_distinct(tiff_df[column])) 
+}
+info$nunique <- nuniquevals
+
+# get data type of each 
+info$'data type' <- sapply(tiff_df, typeof) 
+
+# find frequency of most common value 
+frequency_common <- c()
+common_values <- c() 
+freq_ratio <- c() 
+for (column in tiff_attrs) { 
+  common_info <- as.data.frame(head(sort(table(tiff_df[column]), decreasing=TRUE), 1) )
+  common_values <- append(common_values, common_info$Var1) 
+  frequency_common <- append(frequency_common, common_info$Freq) 
+  freq_ratio <- append(freq_ratio, (common_info$Freq/nrow(tiff_df))*100) 
+} 
+info$'most common value' <- common_values 
+info$'frequency of MCV' <- frequency_common 
+info$'MCV ratio' <- freq_ratio 
+
+info
+```
+
+```{r}
+info$"missing values"/nrow(tiff_df) 
+```
+
+
+## department 
+
+group similar departments together 
+```{r} 
+# replace certain department names 
+n_distinct(tiff_test_df$department)
+# customer support 
+tiff_test_df$department[grep("support", tiff_test_df$department)]<-"customer support" 
+# human resources 
+tiff_test_df$department[grep("hr", tiff_test_df$department)]<-"human resources" 
+tiff_test_df$department[grep("human", tiff_test_df$department)]<-"human resources" 
+tiff_test_df$department[grep("resources", tiff_test_df$department)]<-"human resources" 
+# information technology 
+tiff_test_df$department[grep("information", tiff_test_df$department)]<-"information technology"
+tiff_test_df$department[grep("technology", tiff_test_df$department)]<-"information technology"
+tiff_test_df$department[grep("tech", tiff_test_df$department)]<-"information technology"
+tiff_test_df$department[grep("i. t.", tiff_test_df$department)]<-"information technology" 
+tiff_test_df$department[grep("it", tiff_test_df$department)]<-"information technology" 
+# engineering 
+tiff_test_df$department[grep("engineer", tiff_test_df$department)]<-"engineering" 
+# sales 
+tiff_test_df$department[grep("sales", tiff_test_df$department)]<-"sales" 
+# finance 
+tiff_test_df$department[grep("finance", tiff_test_df$department)]<-"finance" 
+# marketing 
+tiff_test_df$department[grep("marketing", tiff_test_df$department)]<-"marketing" 
+tiff_test_df$department[grep("market", tiff_test_df$department)]<-"marketing" 
+tiff_test_df$department[grep("mkt", tiff_test_df$department)]<-"marketing" 
+# accounting 
+tiff_test_df$department[grep("accounting", tiff_test_df$department)]<-"accounting" 
+# healthcare 
+tiff_test_df$department[grep("health", tiff_test_df$department)]<-"healthcare" 
+
+tiff_test_df$department[grep("admin", tiff_test_df$department)]<-"administrative" 
+# customer service 
+tiff_test_df$department[grep("customer", tiff_test_df$department)]<-"customer service" 
+tiff_test_df$department[grep("client", tiff_test_df$department)]<-"customer service" 
+tiff_test_df$department[grep("csd", tiff_test_df$department)]<-"customer service" 
+
+tiff_test_df$department[grep("oil", tiff_test_df$department)]<-"oil" 
+tiff_test_df$department[grep("operation", tiff_test_df$department)]<-"operations" 
+tiff_test_df$department[grep("retail", tiff_test_df$department)]<-"retail" 
+tiff_test_df$department[grep("recruit", tiff_test_df$department)]<-"recruiting" 
+tiff_test_df$department[grep("construction", tiff_test_df$department)]<-"construction" 
+tiff_test_df$department[grep("content", tiff_test_df$department)]<-"product content" 
+tiff_test_df$department[grep("dev", tiff_test_df$department)]<-"developer" 
+tiff_test_df$department[grep("software", tiff_test_df$department)]<-"software" 
+tiff_test_df$department[grep("hardware", tiff_test_df$department)]<-"hardware" 
+
+tiff_test_df$department[grep("design", tiff_test_df$department)]<-"design" 
+
+n_distinct(tiff_test_df$department)
+```
+
+
+top 10 departments 
+
+```{r}
+topdepartments <- as.data.frame(head(sort(table(tiff_df$department), decreasing=TRUE), 25)) 
+topdepartments$ratio <- topdepartments$Freq*100/nrow(tiff_df)
+# top10department$fraud_ratio <- sum(subset(tiff_df, department %in% top10department$Var1)$fraudulent) / nrow(tiff_df)
+topdepartments
+```
+
+look at top 10 departments and their fraud percentages 
+```{r} 
+df_topdep <- subset(tiff_df, department %in% topdepartments$Var1) 
+ggplot(df_topdep, aes(x = reorder(department, department, function(x)-length(x)), fill = fraudulent)) +
+    geom_bar(position = "fill") +
+    theme_classic() + 
+  ggtitle("Top 25 departments' Fraudulent ratio") + 
+  theme(text = element_text(size=10),
+        axis.text.x = element_text(angle=45, hjust=1)) + 
+  xlab("department ordered by frequency") + 
+  ylab("ratio of fraudulent")
+```
+
+Listings with department = engineering, administrative, oil, accounting, maintenance, and clerical have the highest fraudulent postings. 
+
+dep_top 
+
+create binary var to see if listing has department that is in top 25 departments 
+```{r} 
+tiff_df$dep_top <- ifelse(tiff_df$department %in% topdepartments$Var1, 1, 0) 
+sum(tiff_df$dep_top)/nrow(tiff_df) 
+
+tiff_test_df$dep_top<-ifelse(tiff_test_df$department %in% topdepartments$Var1,1,0)
+```
+
+
+dep_admin
+```{r} 
+tiff_df$dep_admin <- ifelse(tiff_df$department %in% "administrative", 1, 0) 
+sum(tiff_df$dep_admin)/nrow(tiff_df) 
+```
+
+dep_engineering
+```{r} 
+tiff_df$dep_engineering <- ifelse(tiff_df$department %in% "engineering", 1, 0) 
+sum(tiff_df$dep_engineering)/nrow(tiff_df) 
+```
+
+dep_oil
+```{r} 
+tiff_df$dep_oil <- ifelse(tiff_df$department %in% "oil", 1, 0) 
+sum(tiff_df$dep_oil)/nrow(tiff_df) 
+```
+
+dep_admin
+```{r} 
+tiff_test_df$dep_admin <- ifelse(tiff_test_df$department %in% "administrative", 1, 0) 
+sum(tiff_test_df$dep_admin)/nrow(tiff_test_df) 
+```
+
+dep_engineering
+```{r} 
+tiff_test_df$dep_engineering <- ifelse(tiff_test_df$department %in% "engineering", 1, 0) 
+sum(tiff_test_df$dep_engineering)/nrow(tiff_test_df) 
+```
+
+dep_oil
+```{r} 
+tiff_test_df$dep_oil <- ifelse(tiff_test_df$department %in% "oil", 1, 0) 
+sum(tiff_test_df$dep_oil)/nrow(tiff_test_df) 
+```
+
+has_department 
+
+```{r} 
+# create binary variable on department exist or not 
+tiff_df$has_department <- sapply(tiff_df$department, function(f) {as.numeric(!(is.na(f)))}) 
+tiff_test_df$has_department <- sapply(tiff_test_df$department, function(f) {as.numeric(!(is.na(f)))}) 
+#head(tiff_df)
+```
+
+visuals 
+
+Majority of listed does NOT have department included.  
+```{r}
+tiff_df2 <- tiff_df %>%
+      mutate(has_department = ifelse(has_department == "1","has department","does not have department"))
+#counts
+(typeCounts <- table(tiff_df2$has_department))
+#percents
+prop.table(typeCounts)
+#display
+pie(typeCounts, main = "has_department") 
+
+(plotdata <- tiff_df %>%
+  group_by(has_department, fraudulent) %>%
+  summarize(n = n()) %>%
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct))) 
+
+```
+
+Proportion of fraudulent to non-fraudulent is the same whether or not the listing has the department listed or not. 
+\ 
+
+It's 95 to 5 for non-fraudulent to fraudulent listings. 
+```{r} 
+ggplot(tiff_df, aes(x = has_department, fill = fraudulent)) +
+    geom_bar(position = "fill") +
+    theme_classic() + 
+  ggtitle("Fraudulent grouped by has_department")
+
+```
+
+```{r} 
+head(tiff_df)
+```
+
+
+## industry 
+
+group similar industries together 
+```{r} 
+# replace certain industry names 
+n_distinct(tiff_df$industry)
+# customer support 
+tiff_df$industry[grep("support", tiff_df$industry)]<-"customer support" 
+# human resources 
+tiff_df$industry[grep("hr", tiff_df$industry)]<-"human resources" 
+tiff_df$industry[grep("human", tiff_df$industry)]<-"human resources" 
+tiff_df$industry[grep("resources", tiff_df$industry)]<-"human resources" 
+# information technology 
+tiff_df$industry[grep("information", tiff_df$industry)]<-"information technology"
+tiff_df$industry[grep("technology", tiff_df$industry)]<-"information technology"
+tiff_df$industry[grep("tech", tiff_df$industry)]<-"information technology"
+tiff_df$industry[grep("i. t.", tiff_df$industry)]<-"information technology" 
+tiff_df$industry[grep("it", tiff_df$industry)]<-"information technology" 
+# engineering 
+tiff_df$industry[grep("engineer", tiff_df$industry)]<-"engineering" 
+# sales 
+tiff_df$industry[grep("sales", tiff_df$industry)]<-"sales" 
+# finance 
+tiff_df$industry[grep("finance", tiff_df$industry)]<-"finance" 
+# marketing 
+tiff_df$industry[grep("marketing", tiff_df$industry)]<-"marketing" 
+tiff_df$industry[grep("market", tiff_df$industry)]<-"marketing" 
+tiff_df$industry[grep("mkt", tiff_df$industry)]<-"marketing" 
+# accounting 
+tiff_df$industry[grep("accounting", tiff_df$industry)]<-"accounting" 
+# healthcare 
+tiff_df$industry[grep("health", tiff_df$industry)]<-"healthcare" 
+
+tiff_df$industry[grep("admin", tiff_df$industry)]<-"administrative" 
+# customer service 
+tiff_df$industry[grep("customer", tiff_df$industry)]<-"customer service" 
+tiff_df$industry[grep("client", tiff_df$industry)]<-"customer service" 
+tiff_df$industry[grep("csd", tiff_df$industry)]<-"customer service" 
+
+tiff_df$industry[grep("oil", tiff_df$industry)]<-"oil" 
+tiff_df$industry[grep("operation", tiff_df$industry)]<-"operations" 
+tiff_df$industry[grep("retail", tiff_df$industry)]<-"retail" 
+tiff_df$industry[grep("recruit", tiff_df$industry)]<-"recruiting" 
+tiff_df$industry[grep("construction", tiff_df$industry)]<-"construction" 
+tiff_df$industry[grep("content", tiff_df$industry)]<-"product content" 
+tiff_df$industry[grep("dev", tiff_df$industry)]<-"developer" 
+tiff_df$industry[grep("software", tiff_df$industry)]<-"software" 
+tiff_df$industry[grep("hardware", tiff_df$industry)]<-"hardware" 
+
+tiff_df$industry[grep("design", tiff_df$industry)]<-"design" 
+
+n_distinct(tiff_df$industry)
+```
+
+```{r} 
+# replace certain industry names 
+n_distinct(tiff_test_df$industry)
+# customer support 
+tiff_test_df$industry[grep("support", tiff_test_df$industry)]<-"customer support" 
+# human resources 
+tiff_test_df$industry[grep("hr", tiff_test_df$industry)]<-"human resources" 
+tiff_test_df$industry[grep("human", tiff_test_df$industry)]<-"human resources" 
+tiff_test_df$industry[grep("resources", tiff_test_df$industry)]<-"human resources" 
+# information technology 
+tiff_test_df$industry[grep("information", tiff_test_df$industry)]<-"information technology"
+tiff_test_df$industry[grep("technology", tiff_test_df$industry)]<-"information technology"
+tiff_test_df$industry[grep("tech", tiff_test_df$industry)]<-"information technology"
+tiff_test_df$industry[grep("i. t.", tiff_test_df$industry)]<-"information technology" 
+tiff_test_df$industry[grep("it", tiff_test_df$industry)]<-"information technology" 
+# engineering 
+tiff_test_df$industry[grep("engineer", tiff_test_df$industry)]<-"engineering" 
+# sales 
+tiff_test_df$industry[grep("sales", tiff_test_df$industry)]<-"sales" 
+# finance 
+tiff_test_df$industry[grep("finance", tiff_test_df$industry)]<-"finance" 
+# marketing 
+tiff_test_df$industry[grep("marketing", tiff_test_df$industry)]<-"marketing" 
+tiff_test_df$industry[grep("market", tiff_test_df$industry)]<-"marketing" 
+tiff_test_df$industry[grep("mkt", tiff_test_df$industry)]<-"marketing" 
+# accounting 
+tiff_test_df$industry[grep("accounting", tiff_test_df$industry)]<-"accounting" 
+# healthcare 
+tiff_test_df$industry[grep("health", tiff_test_df$industry)]<-"healthcare" 
+
+tiff_test_df$industry[grep("admin", tiff_test_df$industry)]<-"administrative" 
+# customer service 
+tiff_test_df$industry[grep("customer", tiff_test_df$industry)]<-"customer service" 
+tiff_test_df$industry[grep("client", tiff_test_df$industry)]<-"customer service" 
+tiff_test_df$industry[grep("csd", tiff_test_df$industry)]<-"customer service" 
+
+tiff_test_df$industry[grep("oil", tiff_test_df$industry)]<-"oil" 
+tiff_test_df$industry[grep("operation", tiff_test_df$industry)]<-"operations" 
+tiff_test_df$industry[grep("retail", tiff_test_df$industry)]<-"retail" 
+tiff_test_df$industry[grep("recruit", tiff_test_df$industry)]<-"recruiting" 
+tiff_test_df$industry[grep("construction", tiff_test_df$industry)]<-"construction" 
+tiff_test_df$industry[grep("content", tiff_test_df$industry)]<-"product content" 
+tiff_test_df$industry[grep("dev", tiff_test_df$industry)]<-"developer" 
+tiff_test_df$industry[grep("software", tiff_test_df$industry)]<-"software" 
+tiff_test_df$industry[grep("hardware", tiff_test_df$industry)]<-"hardware" 
+
+tiff_test_df$industry[grep("design", tiff_test_df$industry)]<-"design" 
+
+n_distinct(tiff_test_df$industry)
+```
+
+look at top 10 industries
+```{r} 
+topindustry <- as.data.frame(head(sort(table(tiff_df$industry), decreasing=TRUE), 25)) 
+topindustry
+```
+Majority of listings are in technology related roles. 
+Top 3 are information technology, software, and internet. 
+
+look at top 10 industries and their fraud percentages 
+```{r} 
+df_topind <- subset(tiff_df, industry %in% topindustry$Var1) 
+ggplot(df_topind, aes(x = reorder(industry, industry, function(x)-length(x)), fill = fraudulent)) +
+    geom_bar(position = "fill") +
+    theme_classic() + 
+  ggtitle("Top 25 industry's Fraudulent ratio") + 
+  theme(text = element_text(size=10),
+        axis.text.x = element_text(angle=45, hjust=1)) + 
+   xlab("industry ordered by frequency") + 
+  ylab("ratio of fraudulent")
+
+```
+
+Listings with industry=accounting or industry=oil&energy have the highest fraudulent postings. 
+
+industry_top 
+create binary var to see if listing has department that is in top 25 departments 
+```{r} 
+tiff_df$industry_top <- ifelse(tiff_df$industry %in% topindustry$Var1, 1, 0) 
+tiff_test_df$industry_top <- ifelse(tiff_test_df$industry %in% topindustry$Var1, 1, 0) 
+sum(tiff_df$industry_top)/nrow(tiff_df) 
+```
+
+
+industry_acc
+```{r} 
+tiff_df$industry_acc <- ifelse(tiff_df$industry %in% "accounting", 1, 0) 
+sum(tiff_df$industry_acc)/nrow(tiff_df) 
+```
+
+industry_oilenergy 
+```{r} 
+tiff_df$industry_oilenergy <- ifelse(tiff_df$industry %in% "oil", 1, 0) 
+sum(tiff_df$industry_oilenergy)/nrow(tiff_df) 
+```
+
+
+
+has_industry
+```{r}
+# create binary variable on industry exist or not 
+tiff_df$has_industry <- sapply(tiff_df$industry, function(f) {as.numeric(!(is.na(f)))}) 
+
+```
+
+industry_acc
+```{r} 
+tiff_test_df$industry_acc <- ifelse(tiff_test_df$industry %in% "accounting", 1, 0) 
+sum(tiff_test_df$industry_acc)/nrow(tiff_test_df) 
+```
+
+industry_oilenergy 
+```{r} 
+tiff_test_df$industry_oilenergy <- ifelse(tiff_test_df$industry %in% "oil", 1, 0) 
+sum(tiff_test_df$industry_oilenergy)/nrow(tiff_test_df) 
+```
+
+
+
+has_industry
+```{r}
+# create binary variable on industry exist or not 
+tiff_test_df$has_industry <- sapply(tiff_test_df$industry, function(f) {as.numeric(!(is.na(f)))}) 
+
+```
+
+visuals 
+
+About 75% of listings does DO have industry included.  
+```{r}
+tiff_df2 <- tiff_df %>%
+      mutate(has_industry = ifelse(has_industry == "1","has industry","does not have indsutry"))
+#counts
+(typeCounts <- table(tiff_df2$has_industry))
+#percents
+prop.table(typeCounts)
+#display
+pie(typeCounts, main = "has_industry") 
+
+(plotdata <- tiff_df %>%
+  group_by(has_industry, fraudulent) %>%
+  summarize(n = n()) %>%
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct)))
+```
+
+Proportion of fraudulent to non-fraudulent is the similar whether or not the listing has the industry listed or not. 
+\ 
+
+It's 95 to 5 for non-fraudulent to fraudulent listings. 
+```{r} 
+ggplot(tiff_df, aes(x = has_industry, fill = fraudulent)) +
+    geom_bar(position = "fill") +
+    theme_classic() + 
+  ggtitle("Fraudulent grouped by has_industry")
+
+```
+
+
+## description 
+
+cleaned_description column 
+```{r}
+# clean description column 
+descripts <- tiff_df$description 
+
+wordcount<-str_count(descripts)
+max_wordcount<-max(wordcount)
+text_corpus<-VCorpus(VectorSource(descripts))
+toSpace <- content_transformer(function(x, pattern) gsub(pattern, "", x))
+text_corpus <- tm_map(text_corpus, toSpace, "[^[:print:]]")
+text_corpus <- tm_map(text_corpus, removePunctuation)
+text_corpus <- tm_map(text_corpus, removeNumbers)
+text_corpus <- tm_map(text_corpus, content_transformer(tolower))
+text_corpus <- tm_map(text_corpus, stripWhitespace)
+text_corpus_no_stopwords <- tm_map(text_corpus, removeWords, stopwords("english"))
+text_corpus_no_stopwords <- tm_map(text_corpus_no_stopwords, stripWhitespace)
+
+# Remove mentions, urls, emojis, numbers, punctuations, etc.
+descripts <- gsub("@\\w+", "", descripts)
+descripts <- gsub("https?://.+", "", descripts)
+descripts <- gsub("\\d+\\w*\\d*", "", descripts)
+descripts <- gsub("#\\w+", "", descripts)
+descripts <- gsub("[^\x01-\x7F]", "", descripts)
+descripts <- gsub("[[:punct:]]", " ", descripts)
+
+# Remove spaces and newlines
+descripts <- gsub("\n", " ", descripts)
+descripts <- gsub("^\\s+", "", descripts)
+descripts <- gsub("\\s+$", "", descripts)
+descripts <- gsub("[ |\t]+", " ", descripts)
+
+# Put the data to a new column
+tiff_df["cleaned_description"] <- descripts 
+```
+
+
+
+
+description word count 
+```{r}
+# get word count 
+tiff_df$cleandescription_length <- sapply(strsplit(tiff_df$cleaned_description, " "), length) 
+```
+
+
+has_description 
+
+```{r} 
+# create binary variable on department exist or not 
+tiff_df$has_description <- sapply(tiff_df$description, function(f) {as.numeric(!(is.na(f)))}) 
+
+head(tiff_df)
+```
+
+
+
+
+
+cleaned_description column 
+```{r}
+# clean description column 
+descripts <- tiff_test_df$description 
+
+wordcount<-str_count(descripts)
+max_wordcount<-max(wordcount)
+text_corpus<-VCorpus(VectorSource(descripts))
+toSpace <- content_transformer(function(x, pattern) gsub(pattern, "", x))
+text_corpus <- tm_map(text_corpus, toSpace, "[^[:print:]]")
+text_corpus <- tm_map(text_corpus, removePunctuation)
+text_corpus <- tm_map(text_corpus, removeNumbers)
+text_corpus <- tm_map(text_corpus, content_transformer(tolower))
+text_corpus <- tm_map(text_corpus, stripWhitespace)
+text_corpus_no_stopwords <- tm_map(text_corpus, removeWords, stopwords("english"))
+text_corpus_no_stopwords <- tm_map(text_corpus_no_stopwords, stripWhitespace)
+
+# Remove mentions, urls, emojis, numbers, punctuations, etc.
+descripts <- gsub("@\\w+", "", descripts)
+descripts <- gsub("https?://.+", "", descripts)
+descripts <- gsub("\\d+\\w*\\d*", "", descripts)
+descripts <- gsub("#\\w+", "", descripts)
+descripts <- gsub("[^\x01-\x7F]", "", descripts)
+descripts <- gsub("[[:punct:]]", " ", descripts)
+
+# Remove spaces and newlines
+descripts <- gsub("\n", " ", descripts)
+descripts <- gsub("^\\s+", "", descripts)
+descripts <- gsub("\\s+$", "", descripts)
+descripts <- gsub("[ |\t]+", " ", descripts)
+
+# Put the data to a new column
+tiff_test_df["cleaned_description"] <- descripts 
+```
+
+
+
+description word count 
+```{r}
+# get word count 
+tiff_test_df$cleandescription_length <- sapply(strsplit(tiff_test_df$cleaned_description, " "), length) 
+```
+
+
+has_description 
+
+```{r} 
+# create binary variable on department exist or not 
+tiff_test_df$has_description <- sapply(tiff_test_df$description, function(f) {as.numeric(!(is.na(f)))}) 
+
+head(tiff_test_df)
+```
+
+
+
+
+
+visuals 
+
+About 75% of listings does DO have description included.  
+```{r}
+tiff_df2 <- tiff_df %>%
+      mutate(has_description = ifelse(has_description == "1","has industry","does not have indsutry"))
+#counts
+(typeCounts <- table(tiff_df2$has_description))
+#percents
+prop.table(typeCounts)
+#display
+pie(typeCounts, main = "has_description") 
+
+(plotdata <- tiff_df %>%
+  group_by(has_description, fraudulent) %>%
+  summarize(n = n()) %>%
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct)))
+```
+
+There are no listings without description. 
+\ 
+
+It's 95 to 5 for non-fraudulent to fraudulent listings. 
+```{r} 
+ggplot(tiff_df, aes(x = has_description, fill = fraudulent)) +
+    geom_bar(position = "fill") +
+    theme_classic() + 
+  ggtitle("Fraudulent grouped by has_description")
+
+```
+
+
+
+## employment_type 
+
+has_employment 
+```{r} 
+# create binary variable on employment_type exist or not 
+tiff_df$has_employmenttype <- sapply(tiff_df$employment_type, function(f) {as.numeric(!(is.na(f)))}) 
+tiff_test_df$has_employmenttype <- sapply(tiff_test_df$employment_type, function(f) {as.numeric(!(is.na(f)))}) 
+``` 
+
+look at ranking of employment_types 
+```{r} 
+# tiff_df$employment_type[is.na(tiff_df$employment_type)] <- "NA"
+rankedemployment <- as.data.frame(head(sort(table(tiff_df$employment_type), decreasing=TRUE), 10)) 
+# create ratio of listings 
+rankedemployment$ratio <- rankedemployment$Freq*100/nrow(tiff_df)
+# create row for NA types 
+NAtypes <- data.frame("NAs", nrow(tiff_df)-(sum(rankedemployment$Freq)), 100-(sum(rankedemployment$ratio)))
+names(NAtypes) <- names(rankedemployment)
+# add NA types row to rankedemployment df
+rankedemployment <- rbind(rankedemployment, NAtypes)
+# sanity check 
+# sum(rankedemployment$Freq) 
+# nrow(tiff_df) 
+# sum(rankedemployment$ratio)
+
+rankedemployment
+```
+Majority of listings are Full-time employment types (64.99%). 
+A lot of the listings also have employment_type not listed (~20%). 
+
+look at the employment_tyoes and their fraud percentages 
+```{r} 
+# df_topemployment <- subset(tiff_df, employment_type %in% rankedemployment$Var1)
+ggplot(tiff_df, aes(x = employment_type, fill = fraudulent)) +
+    geom_bar(position = "fill") +
+    theme_classic() + 
+  ggtitle("employment_type's Fraudulent ratio") + 
+  theme(text = element_text(size=10),
+        axis.text.x = element_text(angle=45, hjust=1)) 
+
+```
+
+Listings with employment_type=part-time are more fraudluent than other specific employment types. 
+
+
+create dummy variables for employment_type 
+```{r} 
+# dummy variable for employment type (6 types) 
+# "employment_type_Contract", "employment_type_Full-time", "employment_type_Other", "employment_type_Part-time", "employment_type_Temporary", "employment_type_NA"
+tiff_df <- dummy_cols(tiff_df, select_columns = 'employment_type')
+tiff_test_df<-dummy_cols(tiff_test_df,select_columns='employment_type')
+#head(tiff_df) 
+```
+
+sanity check of dummy variables for employment_types 
+```{r} 
+sum(is.na(tiff_df$employment_type))
+nrow(tiff_df) - sum((tiff_df$has_employmenttype) ) 
+```
+
+plot count of fraudulent by employment_type 
+```{r} 
+tabyl(tiff_df, employment_type, fraudulent) %>%
+  adorn_percentages("col") %>%
+  adorn_pct_formatting(digits = 1) 
+
+vtree(tiff_df, "employment_type", palette = 3, sortfill = TRUE)
+
+```
+
+
+## has_questions 
+
+visuals 
+
+About 50% of listings does DO have questions and the other 50 does not.   
+```{r}
+tiff_df2 <- tiff_df %>%
+      mutate(has_questions = ifelse(has_questions == "1","has questions","does not have questions"))
+#counts
+(typeCounts <- table(tiff_df2$has_questions))
+#percents
+prop.table(typeCounts)
+#display
+pie(typeCounts, main = "has_questions") 
+
+(plotdata <- tiff_df %>%
+  group_by(has_questions, fraudulent) %>%
+  summarize(n = n()) %>%
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct)))
+```
+
+For listings with questions, 3% of the listings are fraudulent. 
+For listings without questions, 7% of the listings are fraudulent. 
+
+```{r} 
+ggplot(tiff_df, aes(x = has_questions, fill = fraudulent)) +
+    geom_bar(position = "fill") +
+    theme_classic() + 
+  ggtitle("Fraudulent grouped by has_questions")
+
+```
+
+
+
+```{r}
+names(tiff_df)
+
+```
+
+## correlation plots 
+
+replace NAs in dummy variables 
+
+## Adding Tiffany's features to the dataframe
+
+drop the following attributes: 
+
+* index
+* department
+* description 
+* employment_type 
+* industry
+
+```{r}
+#head(tiff_df)
+#view(tiff_df)
+#view(tiff_test_df)
+tiff_dfuseful <- subset(tiff_df, select=-c(index, department, description, employment_type, industry)) 
+#head(tiff_dfuseful)
+
+tiff_dfuseful_test<-subset(tiff_test_df, select=-c(index, department, description, employment_type, industry)) 
+#write.csv(tiff_dfuseful, "/Users/tiffwong/Desktop/csp571/project/tiff_attrs.csv", row.names = FALSE) 
+```
+```{r}
+colnames(tiff_dfuseful)
+```
+```{r}
+new_cols<-colnames(tiff_dfuseful)[c(3:6,8:10,12:13,16:21)]
+df_train<-cbind(df_train,tiff_dfuseful[,new_cols])
+
+new_cols<-colnames(tiff_dfuseful_test)[c(3:6,8:10,12:13,16:21)]
+df_test<-cbind(df_test,tiff_dfuseful_test[,new_cols])
+```
+
+# Alisha's EDA and Feature Engineering
+
+```{r}
+alisha_train<-df_train[c("telecommuting", "title", "salary_range", "requirements", "required_experience", "fn", "fraudulent")]
+#head(alisha_train)
+
+alisha_test<-df_test[c("telecommuting", "title", "salary_range", "requirements", "required_experience", "fn", "fraudulent")]
+#head(alisha_test)
+```
+
+## Fradulent
+
+```{r}
+alisha_train$fraudulent<-as.factor(alisha_train$fraudulent)
+alisha_train <- alisha_train %>%
+      mutate(fraudulent = ifelse(fraudulent == "1","Fradulent","Not Fraudulent"))
+#counts
+(typeCounts <- table(alisha_train$fraudulent))
+#percents
+prop.table(typeCounts)
+#display
+pie(typeCounts)
+```
+
+## Telecommuting
+
+```{r}
+alisha_train$telecommuting<-as.factor(alisha_train$telecommuting)
+alisha_train <- alisha_train %>%
+      mutate(telecommuting = ifelse(telecommuting == "1","Telecommuting","Non-telecommuting"))
+
+alisha_test$telecommuting<-as.factor(alisha_test$telecommuting)
+alisha_test <- alisha_test %>%
+      mutate(telecommuting = ifelse(telecommuting == "1","Telecommuting","Non-telecommuting"))
+
+#counts
+(typeCounts <- table(alisha_train$telecommuting))
+#percents
+prop.table(typeCounts)
+#display
+pie(typeCounts)
+```
+```{r, echo=FALSE, message=FALSE}
+#https://rkabacoff.github.io/datavis/Bivariate.html
+(plotdata <- alisha_train %>%
+  group_by(telecommuting, fraudulent) %>%
+  summarize(n = n()) %>% 
+  mutate(pct = n/sum(n),
+         lbl = scales::percent(pct)))
+
+ggplot(alisha_train,aes(x=telecommuting,fill=fraudulent))+geom_bar(position="fill")+labs(y="Proportion")
+```
+
+## Title
+
+On brief observation, there are many forms of English Teacher Abroad, we should group all of these together
+```{r}
+#normalizing to all lowercase
+alisha_train$title=tolower(alisha_train$title)
+alisha_train <- alisha_train %>% 
+  mutate(title = str_trim(title))
+#head(summary(alisha_train$title))
+
+alisha_test$title=tolower(alisha_test$title)
+alisha_test <- alisha_test %>% 
+  mutate(title = str_trim(title))
+```
+
+```{r}
+alisha_train$title[grep(".*(english.*teacher|teacher.*english).*",alisha_train$title)]<-"english teacher"
+```
+
+group customer service together
+```{r}
+alisha_train$title[grep(".*(customer.*service|service.*customer).*",alisha_train$title)]<-"customer service"
+
+#head(summary(alisha_train$title))
+```
+group managers together
+```{r}
+alisha_train$title[grep("manager",alisha_train$title)]<-"manager"
+alisha_train$title[grep("assistant",alisha_train$title)]<-"assistant"
+alisha_train$title[grep("intern",alisha_train$title)]<-"intern"
+alisha_train$title<-as.factor(alisha_train$title)
+#head(summary(alisha_train$title))
+```
+
+```{r}
+alisha_test$title[grep(".*(english.*teacher|teacher.*english).*",alisha_test$title)]<-"english teacher"
+```
+
+group customer service together
+```{r}
+alisha_test$title[grep(".*(customer.*service|service.*customer).*",alisha_test$title)]<-"customer service"
+
+#head(summary(alisha_test$title))
+```
+group managers together
+```{r}
+alisha_test$title[grep("manager",alisha_test$title)]<-"manager"
+alisha_test$title[grep("assistant",alisha_test$title)]<-"assistant"
+alisha_test$title[grep("intern",alisha_test$title)]<-"intern"
+alisha_test$title<-as.factor(alisha_test$title)
+#head(summary(alisha_test$title))
+```
+
+
+```{r,include=FALSE}
+#https://rstudio-pubs-static.s3.amazonaws.com/231095_0e6f05290f3b4f82bba74f97edb31744.html
+wordcount<-stri_count_words(alisha_train$title)
+max_wordcount<-max(wordcount)
+text_corpus<-VCorpus(VectorSource(alisha_train$title))
+toSpace <- content_transformer(function(x, pattern) gsub(pattern, "", x))
+text_corpus <- tm_map(text_corpus, toSpace, "[^[:print:]]")
+text_corpus <- tm_map(text_corpus, removePunctuation)
+text_corpus <- tm_map(text_corpus, removeNumbers)
+text_corpus <- tm_map(text_corpus, content_transformer(tolower))
+text_corpus <- tm_map(text_corpus, stripWhitespace)
+text_corpus_no_stopwords <- tm_map(text_corpus, removeWords, stopwords("english"))
+text_corpus_no_stopwords <- tm_map(text_corpus_no_stopwords, stripWhitespace)
+```
+
+```{r, include=FALSE}
+TwoGramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+#ThreeGramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+
+ngram_freqdf <- function(tdm, sparsity){
+  freq <- sort(rowSums(as.matrix(removeSparseTerms(tdm, sparsity))), decreasing = TRUE)
+  return(data.frame(word = names(freq), freq = freq))
+}
+
+onegramNS_tdm <- TermDocumentMatrix(text_corpus_no_stopwords)
+onegramNS_freqdf <- ngram_freqdf(onegramNS_tdm, 0.99)
+
+twogramNS_tdm <- TermDocumentMatrix(text_corpus_no_stopwords, control = list(tokenize = TwoGramTokenizer))
+twogramNS_freqdf <- ngram_freqdf(twogramNS_tdm, 0.999)
+```
+
+```{r, echo=FALSE}
+ngram_barplot <- function(df, title){
+  dfsub <- subset(df[1:20,])
+  ggplot(dfsub, aes(x = reorder(word, -freq), y = freq)) +
+    geom_bar(stat = "identity") + 
+    labs(x = "Words", y = "Count", title = title) + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), plot.title = element_text(hjust = 0.5))
+}
+
+
+onegramNS_barplot <- ngram_barplot(onegramNS_freqdf,"Top 20 Words (No stopwords)")
+twogramNS_barplot <- ngram_barplot(twogramNS_freqdf,"Top 20 2-grams (No stopwords)")
+
+
+grid.arrange(onegramNS_barplot)
+grid.arrange(twogramNS_barplot)
+
+```
+
+Creating Binary Variables for common values in the title column
+```{r}
+binary<-function(df, col, vals){
+  for (x in vals){
+    new_col<-paste(col,x,sep="_")
+    #print(new_col)
+    df[[substitute(new_col)]]<-ifelse(grepl(x,df[[substitute(col)]]),1,0)
+    #print(df[[substitute(new_col)]])
+  }
+  return(df)
+}
+```
+
+```{r}
+alisha_train<-binary(alisha_train, "title", list("manager", "developer", "engineer", "sales", "customer", "senior", "teacher", "assistant", "software", "director", "intern"))
+alisha_test<-binary(alisha_test, "title", list("manager", "developer", "engineer", "sales", "customer", "senior", "teacher", "assistant", "software", "director", "intern"))
+```
+
+## salary_range
+
+There may be some outliers for salary. But this looks like a significant column
+```{r}
+alisha_train$min_salary<-as.numeric(sapply(str_split(alisha_train$salary_range,"-",2),`[`,1))
+alisha_train$max_salary<-as.numeric(sapply(str_split(alisha_train$salary_range,"-",2),`[`,2))
+
+alisha_test$min_salary<-as.numeric(sapply(str_split(alisha_test$salary_range,"-",2),`[`,1))
+alisha_test$max_salary<-as.numeric(sapply(str_split(alisha_test$salary_range,"-",2),`[`,2))
+summary(alisha_train$min_salary)
+summary(alisha_train$max_salary)
+
+(plotdata<-alisha_train %>%
+  group_by(fraudulent) %>%
+  summarize(mean_min_salary=mean(min_salary,na.rm=TRUE)))
+
+
+ggplot(plotdata, 
+       aes(x = fraudulent, 
+           y = mean_min_salary)) +
+  geom_bar(stat = "identity")
+
+
+(plotdata<-alisha_train %>%
+  group_by(fraudulent) %>%
+  summarize(mean_max_salary=mean(max_salary,na.rm=TRUE)))
+
+
+ggplot(plotdata, 
+       aes(x = fraudulent, 
+           y = mean_max_salary)) +
+  geom_bar(stat = "identity")
+```
+
+## required experience
+
+```{r}
+alisha_train$required_experience<-as.character(alisha_train$required_experience)
+alisha_train$required_experience=alisha_train$required_experience%>%replace_na('missing')
+alisha_train$required_experience<-as.factor(alisha_train$required_experience)
+alisha_train<-dummy_cols(alisha_train, select_columns="required_experience")
+```
+
+
+```{r}
+alisha_test$required_experience<-as.character(alisha_test$required_experience)
+alisha_test$required_experience=alisha_test$required_experience%>%replace_na('missing')
+alisha_test$required_experience<-as.factor(alisha_test$required_experience)
+alisha_test<-dummy_cols(alisha_test, select_columns="required_experience")
+```
+
+## fn
+
+```{r}
+alisha_train$fn<-as.character(alisha_train$fn)
+alisha_train$fn=alisha_train$fn%>%replace_na('missing')
+alisha_train$fn<-as.factor(alisha_train$fn)
+alisha_train<-dummy_cols(alisha_train, select_columns="fn")
+```
+
+```{r}
+alisha_test$fn<-as.character(alisha_test$fn)
+alisha_test$fn=alisha_test$fn%>%replace_na('missing')
+alisha_test$fn<-as.factor(alisha_test$fn)
+alisha_test<-dummy_cols(alisha_test, select_columns="fn")
+```
+
+
+## Adding Alisha's columns to the dataframe
+```{r}
+alisha_train<-dummy_cols(alisha_train, select_columns="telecommuting")
+
+
+alisha_test<-dummy_cols(alisha_test, select_columns="telecommuting")
+
+
+alisha_train=select(alisha_train, -telecommuting, -title, -salary_range, -requirements, -required_experience, -fn, -fraudulent)
+alisha_test=select(alisha_test, -telecommuting, -title, -salary_range, -requirements, -required_experience, -fn, -fraudulent)
+```
+
+```{r}
+df_train<-cbind(df_train,alisha_train)
+df_train_numeric<-subset(df_train, select=-c(X, title, location, department, salary_range, company_profile, description, requirements, benefits, employment_type, required_experience, required_education, industry, fn, region_cat, cleaned_description, index))
+
+df_test<-cbind(df_test,alisha_test)
+df_test_numeric<-subset(df_test, select=-c(X, title, location, department, salary_range, company_profile, description, requirements, benefits, employment_type, required_experience, required_education, industry, fn, region_cat, cleaned_description, index))
+
+write.csv(df_train, "/Users/alishakhan/Desktop/School/FALL22/CSP571/project/joint.csv")
+
+write.csv(df_train_numeric, "/Users/alishakhan/Desktop/School/FALL22/CSP571/project/joint_numeric.csv")
+
+write.csv(df_test, "/Users/alishakhan/Desktop/School/FALL22/CSP571/project/joint_test.csv")
+
+write.csv(df_test_numeric, "/Users/alishakhan/Desktop/School/FALL22/CSP571/project/joint_test_numeric.csv")
+
+#head(df_test)
+#head(df_train)
+```
+
+
+```{r,include=FALSE}
+df_train_whole <- read.csv("/Users/alishakhan/Desktop/School/FALL22/CSP571/project/joint.csv", header = TRUE , na.strings = c("na", "NA"),
+                     stringsAsFactors = FALSE, sep = ",")
+df_train_whole<-select(df_train_whole, -X)
+df_train_whole$fraudulent<-as.factor(df_train_whole$fraudulent)
+
+#manual feature selection
+cols<-c("n_uq_urls", "n_uq_hashtags","n_mentions", "n_uq_mentions", "n_uq_chars", "n_commas", "n_digits", "n_lowers", "n_lowersp", "n_periods", "n_puncts", "n_capsp", "n_tobe")
+
+df_train_whole<-df_train_whole %>% select(-contains(cols))
+
+##IMPORTANTTTT
+df_train_whole<-df_train_whole %>%
+   select_if(function(col) length(unique(col))>1)
+
+#colnames(df_train_whole)[colSums(is.na(df_train_whole)) > 0]
+df_train_whole<-df_train_whole %>% select(-contains(c("required_education_"))
+)
+
+df_train_whole$required_education<-df_train_whole$required_education %>% replace_na("unknown")
+
+
+df_train_whole<-dummy_cols(df_train_whole,c("required_education"),remove_selected_columns=FALSE)
+
+df_train_whole$"has_salary"<-ifelse(is.na(df_train_whole$salary_range), 0, 1)
+df_train_whole$department_n_first_personp<-NULL
+
+df_train_whole<-df_train_whole %>% select(-contains(c("X.1","min_salary", "max_salary", "department_n_first_personp")))
+
+#head(df_train_whole$department_n_first_personp)
+
+
+write.csv(df_train_whole, "/Users/alishakhan/Desktop/School/FALL22/CSP571/project/NEW_DATASETS/joint.csv")
+
+df_train_whole<-subset(df_train_whole, select=-c(title, location, department, salary_range, company_profile, description, requirements, benefits, employment_type, required_experience, required_education, industry, fn, region_cat, cleaned_description, index))
+
+write.csv(df_train_whole, "/Users/alishakhan/Desktop/School/FALL22/CSP571/project/NEW_DATASETS/joint_numeric.csv")
+```
+
+```{r,include=FALSE}
+df_test_whole <- read.csv("/Users/alishakhan/Desktop/School/FALL22/CSP571/project/joint_test.csv", header = TRUE , na.strings = c("na", "NA"),
+                     stringsAsFactors = FALSE, sep = ",")
+df_test_whole<-select(df_test_whole, -X)
+df_test_whole$fraudulent<-as.factor(df_test_whole$fraudulent)
+
+#manual feature selection
+cols<-c("n_uq_urls", "n_uq_hashtags","n_mentions", "n_uq_mentions", "n_uq_chars", "n_commas", "n_digits", "n_lowers", "n_lowersp", "n_periods", "n_puncts", "n_capsp", "n_tobe")
+
+df_test_whole<-df_test_whole %>% select(-contains(cols))
+
+##IMPORTANTTTT
+df_test_whole<-df_test_whole %>%
+   select_if(function(col) length(unique(col))>1)
+
+#colnames(df_test_whole)[colSums(is.na(df_test_whole)) > 0]
+df_test_whole<-df_test_whole %>% select(-contains(c("required_education_"))
+)
+
+df_test_whole$required_education<-df_test_whole$required_education %>% replace_na("unknown")
+
+df_test_whole$department_n_first_personp<-NULL
+
+
+df_test_whole<-dummy_cols(df_test_whole,c("required_education"),remove_selected_columns=FALSE)
+
+df_test_whole$"has_salary"<-ifelse(is.na(df_test_whole$salary_range), 0, 1)
+
+
+df_test_whole<-df_test_whole %>% select(-contains(c("X.1","min_salary", "max_salary", "dep_oil")))
+
+df_test_whole[c("employment_type_Contract" , "employment_type_Full.time" ,"employment_type_Other"   ,  "employment_type_Part.time" ,"employment_type_Temporary")][is.na(df_test_whole[c("employment_type_Contract" , "employment_type_Full.time" ,"employment_type_Other"   ,  "employment_type_Part.time" ,"employment_type_Temporary")])] <- 0
+
+
+
+write.csv(df_test_whole, "/Users/alishakhan/Desktop/School/FALL22/CSP571/project/NEW_DATASETS/joint_test.csv")
+
+df_test_whole<-subset(df_test_whole, select=-c(title, location, department, salary_range, company_profile, description, requirements, benefits, employment_type, required_experience, required_education, industry, fn, region_cat, cleaned_description, index))
+
+#write.csv(df_test_whole, "/Users/alishakhan/Desktop/School/FALL22/CSP571/project/NEW_DATASETS/joint_test_numeric.csv")
+```

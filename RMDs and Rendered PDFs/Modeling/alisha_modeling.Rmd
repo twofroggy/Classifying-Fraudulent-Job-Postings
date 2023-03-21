@@ -1,0 +1,85 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+# Loading Libraries
+```{r}
+library(dplyr)
+library(caret)
+library(e1071)
+library(caTools)
+library(fastDummies)
+library(tidyr)
+
+library(caTools)
+library(class)
+```
+# Importing Data
+```{r}
+df_train <- read.csv("/Users/alishakhan/Desktop/School/FALL22/CSP571/project/NEW_DATASETS/train/joint_numeric.csv", header = TRUE , na.strings = c("na", "NA"),
+                     stringsAsFactors = FALSE, sep = ",")
+
+df_test <- read.csv("/Users/alishakhan/Desktop/School/FALL22/CSP571/project/NEW_DATASETS/test/joint_test_numeric.csv", header = TRUE , na.strings = c("na", "NA"),
+                     stringsAsFactors = FALSE, sep = ",")
+
+df_test[is.na(df_test)] = 0
+
+df_train$X<-NULL
+df_test$X<-NULL
+df_train$fraudulent<-as.factor(df_train$fraudulent)
+df_test$fraudulent<-as.factor(df_test$fraudulent)
+df_train$department_n_first_personp<-NULL
+df_test$dep_oil<-NULL
+#df_test$department_n_first_personp<-NULL
+#colnames(df_train)[colSums(is.na(df_train)) > 0]
+#colnames(df_test)[colSums(is.na(df_test)) > 0]
+
+#all_equal(df_train, df_test)
+#colnames(df_train)[!(colnames(df_train) %in% colnames(df_test))]
+#colnames(df_test)[!(colnames(df_test) %in% colnames(df_train))]
+```
+
+# Naive Bayes Classifier
+```{r}
+set.seed(1)
+nb_classifier<-naiveBayes(fraudulent~.,data=df_train)
+y_pred<-predict(nb_classifier,newdata=df_test)
+cm<-table(df_test$fraudulent,y_pred)
+confusionMatrix(cm)
+```
+
+# Support Vector Machine Classifier
+
+```{r}
+svm_classifier=svm(formula=fraudulent~.,data=df_train, type='C-classification',kernel='linear')
+y_pred=predict(svm_classifier,newdata=df_test)
+cm=table(df_test$fraudulent,y_pred)
+confusionMatrix(cm)
+```
+
+# KNN
+
+```{r}
+# Feature Scaling
+train_scale <- scale(select(df_train,-c(fraudulent)))
+test_scale <- scale(select(df_test,-c(fraudulent)))
+
+#View(train_scale)
+#View(test_scale)
+
+classifier_knn <- knn(train = train_scale,
+                      test = test_scale,
+                      cl = df_train$fraudulent,
+                      k = 3)
+
+#classifier_knn
+# Confusiin Matrix
+cm <- table(df_test$fraudulent, classifier_knn)
+confusionMatrix(cm)
+```
+
+
+
+

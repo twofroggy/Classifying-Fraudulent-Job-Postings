@@ -1,0 +1,296 @@
+---
+title: "CSP571 Project - Tiffany Modeling part"
+author: "Tiffany Wong"
+date: '2022-12-02'
+output: 
+  pdf_document:  
+    toc: true
+---
+
+# libraries 
+```{r, include=FALSE} 
+# install.packages("DataExplorer")
+knitr::opts_chunk$set(echo = TRUE) 
+library("dplyr")
+library("faux")
+library("DataExplorer")
+library("caret")
+library("randomForest") 
+library(purrr) 
+library(broom) 
+library(readr) 
+library(tidyverse) 
+library(rpart) 
+library(rpart.plot) 
+```
+
+
+# read in dataframe 
+```{r}
+train_num <- read_csv("/Users/tiffwong/Desktop/csp571/project/datasets/train/joint_train_numeric.csv") 
+# head(train_num) 
+
+test_num <- read_csv("/Users/tiffwong/Desktop/csp571/project/datasets/test/joint_test_numeric.csv") 
+# head(test_num) 
+
+test_num[is.na(test_num)] = 0
+
+train_num$X<-NULL
+test_num$X<-NULL
+train_num$fraudulent<-as.factor(train_num$fraudulent)
+test_num$fraudulent<-as.factor(test_num$fraudulent)
+train_num$department_n_first_personp<-NULL
+test_num$dep_oil<-NULL
+# colnames(train_num)[colSums(is.na(train_num)) > 0]
+# colnames(test_num)[colSums(is.na(test_num)) > 0] 
+
+# sanity check: should be all 0's 
+# sapply(train_num, function(x) sum(is.na(x))) 
+head(train_num)
+head(test_num) 
+# test_num$department_n_first_personp
+```
+
+
+
+# logistic regression 
+```{r} 
+model <- suppressWarnings(glm(fraudulent~., family=binomial(link='logit'), data=train_num))
+log_model_summary <- summary(model)
+```
+
+
+# chi-sq test 
+This was already ran and saved its output as chisq_text.csv for coding conveinence because running it takes a long time. 
+```{r}
+# anova_out <- suppressWarnings(anova(model, test="Chisq") )
+
+# summary_anova <- summary(anova_out)
+```
+
+## export chi-sq results 
+```{r}
+# write_csv(anova_out, "/Users/tiffwong/Desktop/csp571/project/datasets/chisq_test.csv") 
+# write_csv(summary_anova, "/Users/tiffwong/Desktop/csp571/project/datasets/chisq_summary.csv") 
+
+```
+
+## read in chi-sq csv 
+```{r} 
+# read in chisq_test.csv dataset 
+chisq <- read_csv("/Users/tiffwong/Desktop/csp571/project/datasets/chisq_test.csv") 
+
+# dimension of training dataset 
+dim(chisq) 
+```
+
+## get indices of attributes with p-value < 0.01 (significant attributes)
+```{r} 
+# get all p-value greater than 0.01 (meaning significance) 
+sig_pval_index <- which(chisq$"Pr(>Chi)" < 0.01) 
+length(sig_pval_index) 
+
+# only select columns from training dataset with p-value 
+train_df <- train_num[,sig_pval_index] 
+head(train_df) 
+```
+
+
+# subset test data with only useful columns too 
+```{r} 
+test_df <- test_num[,sig_pval_index] 
+
+# check if test data has fraudulent 
+train_df$fraudulent <- as.factor(train_df$fraudulent) 
+test_df$fraudulent <- as.factor(test_df$fraudulent) 
+
+head(test_df)
+```
+
+## double check that colnames are the same in both training and testing data 
+```{r} 
+colnames1 <- names(train_df) 
+all_colnames <- paste0(paste0("'", colnames1, "'"), collapse = ", ") 
+colnames2 <- names(test_df) 
+all_colnames2 <- paste0(paste0("'", colnames2, "'"), collapse = ", ")
+
+all_colnames == all_colnames2
+```
+
+
+# stochastic gradient boosting 
+
+## training 
+```{r}
+# training dataset is: train_df 
+# training labels is: train_num['fraudulent'] 
+
+# Fit the model on the training set
+set.seed(123)
+xgbmodel <- train(
+  fraudulent ~., data = train_df, method = "xgbTree",
+  trControl = trainControl("cv", number = 10), 
+  verbose=FALSE, verbosity = 0
+  )
+
+# Best tuning parameter
+xgbmodel$bestTune
+```
+
+
+## evaluation 
+
+### precition and confusion matrix 
+```{r} 
+# Make predictions on the test data
+predicted.classes <- xgbmodel %>% predict(test_df)
+confusionMatrix(predicted.classes, test_df$fraudulent)
+```
+
+
+### accuracy rate 
+```{r} 
+# Compute model prediction accuracy rate
+accuracy_sgb <- mean(predicted.classes == test_num$fraudulent) 
+accuracy_sgb
+```
+
+
+## variables of importance 
+```{r} 
+variables_imp <- varImp(xgbmodel) 
+variables_imp
+```
+
+
+
+# random forest classifier 
+
+```{r} 
+# rename all colnames 
+names(train_df) <- make.names(names(train_df))
+names(test_df) <- make.names(names(test_df)) 
+```
+
+## training model 
+```{r} 
+# training dataset is: train_df 
+rf <- randomForest(fraudulent~., data=train_df, proximity=TRUE, importance=TRUE) 
+print(rf)
+```
+
+
+## plotting and saving png 
+```{r} 
+# Output to be present
+# As PNG file 
+png(file = "randomForestClassification.png")
+   
+# Plot the error vs 
+# The number of trees graph
+plot(rf)
+   
+# Saving the file
+dev.off()
+```
+
+
+## train data 
+
+### prediction and confusion matrix 
+```{r} 
+p1 <- predict(rf, train_df) 
+confusionMatrix(p1, train_df$fraudulent) 
+```
+
+```{r} 
+length(names(train_df)) 
+length(names(test_df))
+janitor::compare_df_cols_same(train_num, test_num) 
+```
+
+## evaluation with test data 
+
+### precition and confusion matrix 
+```{r} 
+p2 <- predict(rf, test_df) 
+confusionMatrix(p2, test_df$fraudulent) 
+confusionmatrix <- table(p2, test_df$fraudulent) 
+```
+
+
+### accuracy rate 
+```{r}  
+accuracy_random <- (sum(diag(confusionmatrix)))/sum(confusionmatrix) 
+accuracy_random 
+```
+
+## error rate of rf 
+```{r} 
+plot(rf) 
+```
+
+Ask these questions: 
+
+- does the model predict with high accuracy? 
+- if not, it needs further tuning -> but how? 
+- should we tune a number of trees and mtry basis? 
+
+
+
+
+# classification tree 
+
+## create classification tree 
+```{r} 
+tree_model = suppressWarnings(rpart(fraudulent~., data = train_df, method = 'class') )
+
+png(filename="classification_tree.png", height=1000, width=1800, type="cairo") 
+
+suppressWarnings(rpart.plot(tree_model) )
+
+dev.off()
+```
+
+
+## evaluation 
+
+### prediction and confusion matrix 
+```{r} 
+predict_test = predict(tree_model, test_df, type = "class")
+confusionMatrix(predict_test, test_df$fraudulent) 
+```
+
+### accuracy rate 
+```{r} 
+confusionmatrix_tree <- table(predict_test, test_df$fraudulent) 
+confusionmatrix_tree
+accuracy_tree <- (sum(diag(confusionmatrix_tree)))/sum(confusionmatrix_tree) 
+accuracy_tree 
+```
+
+
+
+# model comparison 
+
+## Stochastic Gradient Boosting accuracy 
+```{r} 
+accuracy_sgb 
+```
+
+
+## Random Forest Classifier accuracy 
+```{r}
+accuracy_random 
+```
+
+
+## Classification Tree accuracy 
+```{r}
+accuracy_tree 
+```
+
+The model with the highest accuracy is our random forest model, with `r accuracy_random*100` % for accuracy. 
+
+
+
